@@ -87,9 +87,9 @@
     <script>
         // 读取.env配置（前端通过内置对象模拟，实际生产可使用dotenv库）
         const ENV_CONFIG = {
-            OJ_DOMAIN: '{{请从环境变量读取API地址}}',          // 从.env读取
+            OJ_DOMAIN: '',          // 从.env读取
             LOCAL_BACKEND_URL: 'http://127.0.0.1:5000/api/oj-login', // 从.env读取
-            OJ_HOME_URL: '{{请从环境变量读取API地址}}', // 从.env读取
+            OJ_HOME_URL: '', // 从.env读取
             TRY_INTERVAL: 1000,                // 从.env读取（1秒）
             RISK_PAUSE_MINUTES: 32,            // 从.env读取（32分钟）
             PASSWORD_MIN: 0,
@@ -325,5 +325,4 @@
         });
     </script>
 </body>
-
 </html>
